@@ -219,6 +219,11 @@
   .cc-quick{display:flex;flex-wrap:wrap;gap:8px;padding:0 18px 14px}
   .cc-chip{background:transparent;border:1px solid var(--border2);color:var(--silver2);padding:8px 12px;border-radius:2px;font-family:var(--body);font-size:12.5px;cursor:pointer;transition:.18s}
   .cc-chip:hover{border-color:var(--gold);color:var(--gold)}
+  .cc-typing{display:flex;gap:5px;align-items:center}
+  .cc-typing span{width:6px;height:6px;border-radius:50%;background:var(--silver);display:inline-block;animation:ccblink 1.2s infinite ease-in-out}
+  .cc-typing span:nth-child(2){animation-delay:.18s}
+  .cc-typing span:nth-child(3){animation-delay:.36s}
+  @keyframes ccblink{0%,80%,100%{opacity:.25;transform:translateY(0)}40%{opacity:1;transform:translateY(-2px)}}
   .cc-input{display:flex;gap:8px;border-top:1px solid var(--border);padding:12px;background:var(--deep)}
   .cc-input input{border-radius:2px}
   .cc-send{background:var(--gold);color:#0B0B0B;border:none;padding:0 16px;border-radius:2px;font-weight:600;cursor:pointer}
@@ -643,58 +648,291 @@
     showSuccess();
   });
 
-  /* =====================================================================
-     MOTR CONCIERGE (guided assistant). Fully client-side, no keys.
-     Understands common questions and guides visitors to apply or call.
-     A live AI backend can be connected later without changing the UI.
+    /* =====================================================================
+     MOTR CONCIERGE. Fully client-side, no keys, no external calls.
+     Knowledge base + brand voice from MOTR's FAQ. Answers are assembled
+     and varied so replies feel written, not pasted. Safety rules enforced:
+     never guarantees approval, never invents rates/payments/lenders, hands
+     off to a human for file status, complaints, fraud, and anything unsure.
   ===================================================================== */
   (function(){
     var launch=document.getElementById('ccLaunch'), panel=document.getElementById('ccPanel'),
         x=document.getElementById('ccX'), body=document.getElementById('ccBody'),
         quick=document.getElementById('ccQuick'), ccForm=document.getElementById('ccForm'), ccText=document.getElementById('ccText');
     var opened=false;
+
+    var APPLY='<a href="#apply" class="gold" onclick="document.getElementById(\'ccPanel\').style.display=\'none\';document.getElementById(\'ccLaunch\').style.display=\'flex\'">start an application</a>';
+    var CALL='<a href="tel:+16473354468" class="gold">647-335-4468</a>';
+    var MAIL='<a href="mailto:motrbroker@gmail.com" class="gold">motrbroker@gmail.com</a>';
+
+    /* anti-repeat picker */
+    var seen={};
+    function pick(arr,key){
+      if(arr.length===1) return arr[0];
+      var last=seen[key], i;
+      do { i=Math.floor(Math.random()*arr.length); } while(arr.length>1 && i===last);
+      seen[key]=i; return arr[i];
+    }
+    var ACK=["Yeah, for sure.","Good question.","For sure.","No worries.","Absolutely.","That's actually a pretty common one.","Happy to help with that.","Yeah, totally."];
+    var NUDGE=[
+      "If you want, tell me roughly what you're looking for and I can point you the right way.",
+      "Easiest move when you're ready is to "+APPLY+".",
+      "If you'd rather just talk it through, call or text "+CALL+".",
+      "No stress, throw any other questions at me too.",
+      "Want me to walk you through how the approval side works?"
+    ];
+    var SUBJECT="every application still goes to the lender for review, so nothing is promised up front";
+
+    /* ---------- SAFETY / HUMAN-HANDOFF (checked first) ---------- */
+    function safety(t){
+      // fraud, identity theft, impersonation, urgent
+      if(/(identity|ident)\s*(theft|stolen)|stole my|someone stole|fraud|hacked|breach|impersonat|unauthorized|unauthorised|gift ?card|crypto.*(pay|deposit)|scammed|exposed my/.test(t))
+        return "I want to get this in front of a real person right away. Please call "+CALL+" and explain what's happened. You can also email "+MAIL+" with the subject line URGENT. I would not try to sort something like this out over a public chat.";
+      // asking to send credentials / SIN in chat
+      if(/\b(sin|social insurance)\b|banking password|bank password|online banking|\bpin\b|card pin|account password/.test(t))
+        return "Please don't send anything sensitive like a SIN, banking password, or PIN through this chat. If something like that is ever actually needed, the MOTR team will give you a secure way to provide it. When in doubt, call "+CALL+".";
+      // upload ID / documents in chat
+      if(/(upload|send|attach).*(licen|id|document|pay ?stub|paystub|passport)/.test(t))
+        return "Best not to send ID or documents through this chat. Use the secure MOTR upload the team sets up, or if you can't find it, call or text "+CALL+" and we'll help you get it to the right place.";
+      // specific-file status / approval / my rate / declined me
+      if(/(am i|are you|did (i|you|the bank|the lender)).*(approv|declin|qualif)|approv(ed|al).*(yet|status|me\b|my)|my (application|file|deal|rate|payment|loan).*(status|approv|where|update|rate|payment)|where.*(my (application|file|deal))|heard (anything|back)|status of my|check my (file|application|status|credit)|pre.?approved\b|my interest rate|my rate\b/.test(t))
+        return "I don't want to guess and give you the wrong info on something that important. The team can pull up your actual file and tell you exactly where it's at. Call or text "+CALL+" or email "+MAIL+" and they'll check it for you.";
+      // complaints / upset
+      if(/no one (called|contacted|reached)|nobody called|taking (so|too) long|why.*(so|too) long|too many (messages|texts|calls)|stop (the )?(messages|texts)|manager|complain|angry|frustrat|this sucks|terrible|worst/.test(t))
+        return "Sorry about that, that's not the experience we want you having. The quickest fix is to call or text "+CALL+" and let them know you already submitted an application so they can pull it up. If it's about too many messages, tell them and they'll update your preferences (you can also email "+MAIL+").";
+      // delete info / withdraw
+      if(/(delete|remove|erase).*(my )?(info|information|data|account)|withdraw my (application|info)|opt out|unsubscribe|changed my mind|cancel my application/.test(t))
+        return "No problem at all. For anything privacy related or to pause or close an application, send a quick note to "+MAIL+" or call "+CALL+" and the team will take care of it. Some records may need to be kept for legal reasons, but they'll explain that if it applies.";
+      return null;
+    }
+
+    /* ---------- vehicle make personalization ---------- */
+    var MAKES=[['bmw','a BMW'],['mercedes','a Mercedes'],['benz','a Mercedes'],['audi','an Audi'],['porsche','a Porsche'],['tesla','a Tesla'],['lexus','a Lexus'],['range rover','a Range Rover'],['land rover','a Land Rover'],['jeep','a Jeep'],['ford','a Ford'],['toyota','a Toyota'],['honda','a Honda'],['dodge','a Dodge'],['ram','a Ram'],['gmc','a GMC'],['chevy','a Chevy'],['chevrolet','a Chevrolet'],['nissan','a Nissan'],['hyundai','a Hyundai'],['kia','a Kia'],['mazda','a Mazda'],['acura','an Acura'],['infiniti','an Infiniti'],['cadillac','a Cadillac'],['volkswagen','a Volkswagen'],['subaru','a Subaru'],['can-am','a Can-Am'],['canam','a Can-Am']];
+    function makeAsk(t){
+      if(!/(you (have|get|find|source)|can you|do you|looking for|want|need|get me|any\b|got any)/.test(t)) return null;
+      for(var i=0;i<MAKES.length;i++){ if(t.indexOf(MAKES[i][0])>-1){
+        return "We don't run one fixed lot like a normal dealership, so it's less about what's parked out back and more about what we can source through the partner network. Tell me the year, trim, colour, mileage and rough budget for "+MAKES[i][1]+" and the team can go see what fits. "+(/(luxury|amg|m3|m4|m5|c63|s class|rs|gt)/.test(t)?"On the higher-end stuff the loan amount is bigger, so the lender leans harder on the full application, but it's absolutely worth a look. ":"")+"When you're ready, "+APPLY+".";
+      }}
+      return null;
+    }
+
+    /* ---------- knowledge base ---------- */
+    // p = strong phrases (+3), w = words (+1). ack:true allows a casual opener.
+    var KB=[
+      {id:'whatis',ack:1,p:['what is motr','what does motr do','who are you guys','what do you do','tell me about motr'],w:['motr'],
+        a:["MOTR helps you find a vehicle and financing without running around to a bunch of dealerships. You tell us what you're after, do one application, and a real person helps figure out the best next step. We cover cars, SUVs, trucks, luxury, powersports and more."]},
+      {id:'dealership',ack:1,p:['are you a dealership','is motr a dealership'],w:[],
+        a:["Not exactly. MOTR works more like a vehicle concierge and financing-support platform. We help qualify you, understand what you want, and connect you with the right dealership or finance partner. The actual sale and financing happen through those registered partners."]},
+      {id:'lender',ack:1,p:['are you a lender','is motr a lender','do you lend'],w:[],
+        a:["Nope, MOTR doesn't lend money directly. We work with automotive finance partners and lenders to help explore options for you, then a real person walks you through it."]},
+      {id:'broker',ack:1,p:['are you a broker','is motr a broker'],w:['broker'],
+        a:["We work like a vehicle concierge and matching service. Depending on the deal, we connect you with registered dealerships and finance partners. If you want specifics on how your transaction would be handled, reach out at "+CALL+" or "+MAIL+"."]},
+      {id:'driven',ack:1,p:['driven by people','what does driven by people mean'],w:[],
+        a:["It means there's real human support behind the tech. You can apply online, upload docs and track things, but you're not just dumped into an automated system and forgotten. A real person helps you through it."]},
+      {id:'location',ack:1,p:['where are you located','where is motr','what areas','do you serve','are you in ontario','outside ontario','across canada'],w:['located','area','ontario','toronto','gta','mississauga','brampton','vaughan','markham','hamilton','ottawa','london','waterloo'],
+        a:["We're based in Canada and started out focused on Ontario, including Toronto, the GTA and cities like Mississauga, Brampton, Hamilton, Kitchener-Waterloo, London and Ottawa. We're growing the network into other areas too, so if you're elsewhere in Canada still reach out and we'll take a look."]},
+      {id:'how',ack:1,p:['how does it work','how does motr work','how do you work','what is the process','how it works','walk me through'],w:['process','steps'],
+        a:["Pretty simple. You tell us what you're looking for, complete an application, and a real person reviews it. We might ask for a few documents, then with your permission your info can go to the right finance partner. If there's a workable option we help match you to a vehicle and dealer, and the dealer handles final sale and delivery. Want to "+APPLY+"?"]},
+      {id:'knowvehicle',ack:1,p:['do i need to know what','know exactly what vehicle','not sure what i want','dont know what car'],w:[],
+        a:["Not at all. You can come in knowing the exact car, or just say something like I need an SUV around 600 a month. That's plenty to start with."]},
+      {id:'afford',ack:1,p:['what can i afford','dont know what i can afford','how much can i afford','not sure what i can afford'],w:['afford'],
+        a:["Super common question. Give us a rough idea of your income, down payment, current expenses and a monthly payment you'd be comfortable with, and the team can help you figure out what's realistic before you start shopping."]},
+      {id:'dealerfirst',ack:1,p:['go to a dealership first','have to go to a dealer'],w:[],
+        a:["Nope, that's kind of the whole point. You can start everything with MOTR online or over the phone, and we sort out the financing and vehicle side before sending you all over the place."]},
+      {id:'howlong',ack:1,p:['how long does it take','how long is the process','how long to get approved'],w:[],
+        a:["Depends on the application. Some situations move quick, others need extra documents, lender review or vehicle sourcing. Fastest thing you can do is fill the application out fully and reply quickly if the team asks for anything."]},
+      {id:'howfast',ack:1,p:['how fast will someone','how soon will you call','when will you contact'],w:[],
+        a:["We try to get back to you as fast as we can during business hours. If you've already applied and haven't heard yet, give us a shout at "+CALL+"."]},
+      {id:'apply',ack:1,p:['how do i apply','how to apply','where do i apply','can i apply'],w:['apply'],
+        a:["You can do it right here on the site, it only takes a few minutes to get going. When you're ready, "+APPLY+"."]},
+      {id:'free',ack:1,p:['is it free','is the application free','does it cost','do you charge to apply','any cost to apply'],w:[],
+        a:["Yep, no charge just to apply and have the team review your situation. Vehicle price and financing terms come later from the dealer and lender."]},
+      {id:'infoneeded',ack:1,p:['what info do i need','what information do i need','what do i need to apply'],w:[],
+        a:["Usually the basics: name, phone, email, address, employment, income, the kind of vehicle you want, budget, down payment, any trade-in, and a general read on your credit. The lender may ask for a bit more later."]},
+      {id:'whyemployment',ack:1,p:['why do you need my employment','why do you need my income','why do you need my job'],w:[],
+        a:["Lenders want to understand your ability to make the payments, so things like your employment, income and time on the job help them look at the application. Standard stuff."]},
+      {id:'whyaddress',ack:1,p:['why do you need my address'],w:['address'],
+        a:["Lenders normally verify where you live and how long you've been there. It's a standard part of most financing applications."]},
+      {id:'saveresume',ack:1,p:['save my application','finish it later','come back to it'],w:[],
+        a:["If the form gives you a save-and-resume option, go for it. If you're having any trouble finishing it, call or text "+CALL+" and we'll help."]},
+      {id:'mistake',ack:1,p:['made a mistake','wrong info on my application','fix my application','correct my application'],w:[],
+        a:["No worries. Just let us know what needs fixing at "+CALL+" or "+MAIL+" and we'll update your file."]},
+      {id:'multiple',ack:1,p:['submit more than one','multiple applications','apply twice','another application'],w:[],
+        a:["Usually you don't need to, and duplicates can actually slow things down. If your situation or the vehicle changed, just tell us and we'll update your existing file."]},
+      {id:'badcredit',ack:1,p:['bad credit','poor credit','credit is bad','credit sucks','credit is trash','terrible credit','low credit'],w:[],
+        a:["Bad credit doesn't automatically mean there are no options. Income, employment, down payment, current debts and the vehicle you want all factor in too. "+SUBJECT.charAt(0).toUpperCase()+SUBJECT.slice(1)+", but the easiest thing is to "+APPLY+" and let the team look at the full picture.",
+           "You're definitely not the first person to say that. A rough credit history is only part of the story, lenders weigh income, employment and down payment too. Nothing's guaranteed, but it's worth letting someone look at the whole situation. You can "+APPLY+" whenever."]},
+      {id:'scoreneeded',ack:1,p:['what credit score do i need','minimum credit score','what score do i need'],w:[],
+        a:["There's no magic score that guarantees anything. Lenders look at the whole picture: credit history, income, employment, debt, down payment and the vehicle. So even if you know your number, we'd still want to see the full situation."]},
+      {id:'lowscore',ack:1,p:['score is really low','my score is low','520','should i even bother','am i cooked','560','480'],w:[],
+        a:["A low score doesn't tell the whole story, and it definitely doesn't mean don't bother. There are lenders that work with tougher credit. Let's see income, employment, down payment and what you want to buy before assuming anything. You can "+APPLY+" to get it in front of the team."]},
+      {id:'nocredit',ack:1,p:['no credit','havent built credit','never had credit','dont have credit'],w:[],
+        a:["No credit and bad credit are actually different situations. Some lenders work with first-time borrowers or people who haven't built much Canadian credit yet, so it's worth a look."]},
+      {id:'newcomer',ack:1,p:['new to canada','just moved to canada','newcomer','moved here','immigrated','work permit','study permit','student permit','permanent residency','no canadian credit'],w:['newcomer','immigrant','permit'],
+        a:["This is one of the situations we specifically work with. Little or no Canadian credit history doesn't automatically shut the door. Employment, income, down payment and your immigration status all play in, and different lenders have different requirements. Send in an application and we'll see what's possible."]},
+      {id:'selfemployed',ack:1,p:['self employed','self-employed','own business','i am a contractor','contractor'],w:['freelance'],
+        a:["Self-employed folks get financed all the time. Main difference is lenders may ask for different proof of income. Apply and the team will tell you exactly what they'd need."]},
+      {id:'cash',ack:1,p:['paid cash','paid in cash','get paid cash','cash job'],w:[],
+        a:["It can be a bit harder because lenders usually want income they can verify, but it's not automatically off the table. Best move is to apply honestly and let us see what options exist."]},
+      {id:'employmenttype',ack:1,p:['on probation','new job','just started a job','part time','part-time','on disability','retired','pension','child support','overtime','commission','two jobs'],w:['probation','disability','retired','pension'],
+        a:["Short answer, yeah, it can still work. Lenders look at your total verifiable income and your ability to handle the payment, and different lenders weigh things like probation, new jobs, part-time hours, disability, pension or commission differently. Easiest is to apply and let the team match it to the right lender."]},
+      {id:'bankruptcy',ack:1,p:['bankruptcy','bankrupt','consumer proposal','repossession','repo\b','had a repo'],w:['bankruptcy','proposal','repo','repossessed'],
+        a:["None of those automatically mean you can't finance a vehicle. Timing, current status, income and the rest of your profile matter a lot. If you're currently in a bankruptcy or proposal it gets a bit more involved, so it's worth talking to the team directly at "+CALL+". Otherwise, apply and we'll take a look without pretending anything's guaranteed."]},
+      {id:'creditcheck',ack:1,p:['will you check my credit','do you check credit','pull my credit','hard check','hard inquiry','hurt my score','equifax','transunion','soft check'],w:[],
+        a:["A credit check may be part of the financing process, but we won't just randomly pull it, you should be asked for permission first. Whether it's a hard or soft inquiry can depend on the lender and stage, and a hard pull can sometimes nudge your score a little. If that matters to you, ask your advisor before authorizing it."]},
+      {id:'guarantee',ack:0,p:['guarantee approval','guaranteed approval','can you guarantee','100% approval','everyone approved'],w:[],
+        a:["I won't promise that, and honestly you should be cautious of anyone who does. We work with a lot of different credit situations and lender options, but every approval still comes down to lender review. What I can say is it's worth letting the team look at your actual situation."]},
+      {id:'preapprove',ack:1,p:['am i pre approved','pre approved','preapproved','applying vs approved','difference between applying'],w:[],
+        a:["Applying just means you've asked us to review your situation. Approved means a lender has looked at the required info and agreed to finance, subject to their conditions. Submitting an application on its own doesn't mean you're approved, treat an approval as real once the team confirms it with you."]},
+      {id:'conditional',ack:1,p:['conditional approval','what is a conditional'],w:['conditional'],
+        a:["A conditional approval means a lender may say yes as long as certain things are met, like proof of income, a driver's licence, proof of residence, a down payment, a specific vehicle, or sometimes a co-applicant. Meet the conditions and it moves forward."]},
+      {id:'declined',ack:1,p:['why was i declined','why did i get declined','got denied','denied everywhere','if i am declined','declined is that it'],w:['declined','denied'],
+        a:["Getting declined is frustrating but it's not always the end of it. Sometimes another lender, a different vehicle, a bigger down payment or a co-applicant changes things, and sometimes the smart move is to wait and strengthen the application. Before firing off applications everywhere again, it helps to understand why the last ones didn't land. Call "+CALL+" or apply and we'll be straight with you either way."]},
+      {id:'howmany',ack:1,p:['how many lenders','send to every bank','every bank','which banks'],w:['lenders'],
+        a:["Our finance partners have access to multiple auto lending options, and which ones fit depends on you, the vehicle and the province. We don't just blast it to every bank, applications are handled based on the situation and the lenders that actually make sense."]},
+      {id:'rate',ack:0,p:['what interest rate','what rate will i get','my interest rate','whats a good rate','why is my rate high','rate go down'],w:['rate','interest','apr'],
+        a:["I can't quote you a rate, that only comes once a lender actually reviews the application. It moves with your credit, income, the vehicle, loan amount, term and down payment. Higher-risk profiles usually see higher rates, and some people use an auto loan to rebuild and refinance later, though there's no guarantee on that. The better question is whether the overall deal makes sense for your budget."]},
+      {id:'downpayment',ack:1,p:['need a down payment','down payment','money down','put money down','minimum down','bigger down payment'],w:['downpayment'],
+        a:["Maybe, maybe not. Some deals work with 0 down, others need something upfront, it depends on the application, vehicle and lender. A bigger down payment reduces what needs to be financed and can make an application more attractive. If you've got a trade-in with positive equity, that can often go toward the down payment too."]},
+      {id:'cosigner',ack:1,p:['co signer','cosigner','co-signer','co applicant','cosign','can my spouse','can my parent','can a friend co'],w:['cosigner','cosign'],
+        a:["Possibly, yeah. A strong co-applicant can sometimes help an application, and a spouse, parent or in some cases a friend may be able to go on it. Their income, debts and credit all get looked at, and the lender still has to approve both of you."]},
+      {id:'vehicles',ack:1,p:['what vehicles','what kind of vehicles','what can you help with','do you have inventory','own inventory','new or used'],w:['inventory'],
+        a:["We can help with cars, sedans, SUVs, trucks, luxury vehicles, powersports (motorcycles, ATVs, side-by-sides, Can-Ams, jet skis), RVs and specialty vehicles, new or used, depending on the partner network. We don't carry one big fixed lot, we source through dealerships and partners to fit your situation."]},
+      {id:'findspecific',ack:1,p:['find a specific','specific vehicle','can you find me','looking for a specific','source a vehicle'],w:[],
+        a:["That's the goal. Tell us the make, model, year, trim, colour, mileage and budget, and the team can see what can be sourced through the network. The more flexible you are, the easier the match usually is."]},
+      {id:'luxury',ack:1,p:['luxury vehicle','luxury car','exotic','high end'],w:['luxury','exotic'],
+        a:["Potentially, yeah. Luxury usually needs a stronger overall application since the loan amount is higher, so the lender leans harder on the full picture. Still worth a look, and the team can also show you what would realistically get approved without wasting your time."]},
+      {id:'trucks',ack:1,p:['can you get trucks','need a truck','looking for a truck','pickup'],w:['truck'],
+        a:["Absolutely, trucks are one of the main categories we work with. Tell us what you're after and roughly your budget and we'll go from there."]},
+      {id:'powersports',ack:1,p:['motorcycle','motorbike','atv','jet ski','jetski','side by side','side-by-side','powersport','can-am','canam','snowmobile','dirt bike'],w:['motorcycle','atv'],
+        a:["Yeah, powersports is part of the network we're building, motorcycles, ATVs, side-by-sides, Can-Ams, jet skis and the like, depending on availability and financing partners. Tell us exactly what you want and we'll see what fits."]},
+      {id:'rv',ack:1,p:['rv','motorhome','camper','travel trailer','recreational vehicle'],w:['rv'],
+        a:["Potentially, yeah. RV options depend on the partner network and the financing situation. Reach out with the details and we'll take a look."]},
+      {id:'commercial',ack:1,p:['commercial vehicle','fleet','work van','cargo van','box truck'],w:['commercial','fleet'],
+        a:["Potentially, this is an area we're continuing to expand into. For a commercial request it's best to contact the team directly at "+CALL+"."]},
+      {id:'choose',ack:1,p:['choose my own vehicle','already found a car','found a vehicle','i found one','pick my own'],w:[],
+        a:["Yep, you can pick your own. If you've already found something, send the details to the team and we'll see whether it works with the financing and partner side."]},
+      {id:'changevehicle',ack:1,p:['change my vehicle','change the car','dont like the vehicles','different vehicle after'],w:[],
+        a:["Sometimes. Approvals can have limits around price, year, mileage, vehicle type and loan amount, so switching the vehicle may mean the lender re-reviews the deal. And if you don't like what you're offered, just tell us, we're not here to shove you into something you don't want."]},
+      {id:'tradein',ack:1,p:['trade in','trade-in','trade my car','still owe on my','negative equity','my trade worth'],w:['tradein'],
+        a:["Yeah, you can trade in, even if you still owe on it, that's really common. Send the year, make, model, trim, mileage, condition and current loan balance and our partners can value it. If you owe more than it's worth (negative equity), that can sometimes be rolled into the new loan depending on the amount, vehicle and lender."]},
+      {id:'monthly',ack:1,p:['shop by payment','monthly payment','300 a month','500 a month','600 a month','per month','a month','payment higher than','stretch the loan','longer term'],w:[],
+        a:["You can absolutely shop by monthly payment, honestly it's one of the easiest ways to start. Tell us a number you're comfortable with and we work backwards from there. Keep in mind the payment moves with vehicle price, taxes, interest, loan length, down payment and any trade equity. A longer term can lower the payment but usually means more interest over time."]},
+      {id:'documents',ack:1,p:['what documents','what docs','pay stubs','paystubs','proof of income','what paperwork','no pay stub'],w:['documents','paperwork'],
+        a:["Depends on the lender, but commonly it's a driver's licence, proof of income (like pay stubs or an employment letter), proof of address, banking info and any trade-in details. Lenders use them to verify income and identity. No pay stub? Tell us, another type of income verification may work. The team will tell you exactly what's needed and the secure way to send it."]},
+      {id:'privacy',ack:1,p:['what happens to my info','sell my info','sell my information','who can see my application','who sees my info','my data'],w:['privacy'],
+        a:["Your info is used to review your application, talk to you, and where you authorize it, share what's needed with the right finance or dealership partners. It's not about selling your details to random companies, and only authorized people who need it to help process the application can see it. For any privacy request, email "+MAIL+"."]},
+      {id:'fees',ack:1,p:['hidden fees','how does motr make money','how do you make money','any fees','extra fees'],w:[],
+        a:["There shouldn't be surprise MOTR fees. There's no charge just to apply. MOTR may get compensated by partners when a deal actually completes. Any vehicle, financing, warranty or admin charges tied to the actual transaction should be disclosed by the responsible partner, so always review your final paperwork before signing."]},
+      {id:'delivery',ack:1,p:['do i have to pick up','deliver to my house','delivered to me','pick up the vehicle','another city'],w:['delivery','deliver'],
+        a:["Depends on the dealership and vehicle. Some allow delivery, others need you to visit the dealership, and buying from another city is often possible since we're not tied to one physical lot. Once a vehicle's picked, your advisor can confirm the options."]},
+      {id:'insurance',ack:1,p:['insurance before','need insurance','can you get me insurance'],w:['insurance'],
+        a:["Usually yeah, you'll normally need valid insurance before a financed vehicle can be delivered. MOTR's main thing is sourcing and financing support, but if there's an insurance referral option your advisor can point you to it."]},
+      {id:'licence',ack:1,p:['driver licence','drivers licence','driver\'s license','g1','g2','foreign licence','foreign license','learners'],w:['licence','license'],
+        a:["Usually you'll need an appropriate driver's licence, especially before driving the vehicle away. Situations like a G1 or a foreign licence (common for newcomers) can make it a bit more involved with lender and insurance rules, but it's worth sending in the application so we can see what options exist. Tell us what licence you currently hold."]},
+      {id:'students',ack:1,p:['student','international student','can students'],w:['student'],
+        a:["Potentially. Lenders usually care about income and your ability to make the payments, and a co-applicant can sometimes help. For international students, immigration status, income, credit history and down payment all matter. Apply and we'll take a look."]},
+      {id:'existingloan',ack:1,p:['already have a car loan','another car loan','trade in a financed','get out of my current','out of my lease','two car loans'],w:[],
+        a:["Possibly. Lenders will look at whether your income can support both obligations, and trading in a financed vehicle is really common. If you're trying to get out of your current vehicle, we'd want to know what you owe, what it's worth, why you want out, and what you're looking for next."]},
+      {id:'refinance',ack:1,p:['refinance','refinancing','lower my payment on my current'],w:['refinance'],
+        a:["Our main focus is helping with vehicle transactions, and refinancing options can depend on the partners available. Best to check with the team directly at "+CALL+"."]},
+      {id:'firsttime',ack:1,p:['first car','first time buyer','never financed','first vehicle'],w:[],
+        a:["Everyone starts somewhere, and some lenders specifically work with first-time buyers, so it's not a problem on its own. On a first car, focus on a payment you can comfortably handle after insurance, fuel, maintenance and parking. Don't stretch just because a lender says you technically qualify."]},
+      {id:'rebuild',ack:1,p:['rebuild credit','build credit','build my credit','help my credit','fix my credit'],w:[],
+        a:["Potentially, yeah. Making the payments on time can help build positive history. The flip side is that a loan you can't comfortably afford can hurt, so the payment has to make sense for your budget. There's no exact timeline, it's about overall behaviour over time."]},
+      {id:'condition',ack:1,p:['inspected','accident free','accident-free','carfax','vehicle history','warranty','extended warranty'],w:['carfax','warranty','inspection'],
+        a:["Inspection and certification depend on the dealership, vehicle and province, and history matters, so ask for the Carfax and disclosure before buying. Some vehicles have manufacturer warranty left, others offer optional warranty products. An extended warranty isn't a must, it depends on the vehicle's age, mileage and your comfort level, so read what's actually covered before buying one. Optional products should be clearly optional."]},
+      {id:'payoff',ack:1,p:['pay off early','early payoff','pay it off early','penalty for paying early','extra payments','prepay','prepayment'],w:[],
+        a:["Many Canadian auto loans are open loans that allow early repayment or extra payments, but that's set by your specific agreement, so confirm the exact terms before signing. If you're not sure, ask the lender or dealer to point out the payoff and prepayment terms in the paperwork."]},
+      {id:'price',ack:1,p:['negotiate the price','advertised price','final price','out the door price','are your vehicles cheaper'],w:[],
+        a:["The team and partners help find competitive options, though exact pricing and negotiation depend on the dealership. The advertised price usually isn't the final number once taxes, licensing, financing terms and any optional products are in, so always review the full bill of sale. We're not promising the cheapest car in Canada, the goal is a deal that fits your needs and financing."]},
+      {id:'taxes',ack:1,p:['pay tax','taxes on the vehicle','hst','sales tax','licence plates','license plates','registration'],w:['tax','taxes'],
+        a:["Yeah, vehicle purchases in Canada are generally subject to applicable taxes, and the exact amount depends on your province and the deal. The dealership completing the transaction usually handles plates and registration."]},
+      {id:'appointment',ack:1,p:['do i need an appointment','book an appointment','everything online','can everything be done online'],w:['appointment'],
+        a:["Not to start, you can apply online first. A lot of the process can be handled digitally, though depending on the deal some steps may still need ID verification, signatures or an in-person visit to view or pick up the vehicle."]},
+      {id:'contact',ack:1,p:['can i text you','your phone number','your email','your website','call after hours','how do i reach you','contact you'],w:['contact'],
+        a:["For sure. Call or text "+CALL+", email "+MAIL+", or the site is www.motrbroker.com. After hours, leave a message or text and the team gets back to you when they're available."]},
+      {id:'whymotr',ack:1,p:['why should i use motr','why motr','instead of a dealership','vs autotrader','why not autotrader','why not just go to a dealer'],w:['autotrader'],
+        a:["The big one is convenience. Instead of starting over at a bunch of dealerships or just scrolling listings, MOTR is one place to start. We help with the whole thing around you: budget, financing, qualification, sourcing the vehicle, matching a partner, and real human support. AutoTrader's great for browsing, we're helping with the actual process."]},
+      {id:'mustbuy',ack:1,p:['do i have to buy','have to buy the vehicle you find','obligated to buy'],w:[],
+        a:["No. You're still the customer, and you should understand and be comfortable with the deal before signing anything."]},
+      {id:'legit',ack:1,p:['are you legit','is this legit','are you real company','is motr real','is this a scam'],w:['legit'],
+        a:["Fair question, especially with anything involving financing. MOTR helps customers navigate vehicle sourcing and financing through automotive partners. You can verify who you're dealing with any time: call or text "+CALL+", email "+MAIL+", or check www.motrbroker.com."]},
+      {id:'spam',ack:1,p:['will you spam me','blow up my phone','50 dealerships calling','too many calls','sell my number'],w:['spam'],
+        a:["Nah, the point is to actually help you get a vehicle, not turn your phone into a call centre. You'll get messages related to your application, and you can tell us any time if you don't want marketing messages."]},
+      {id:'realperson',ack:1,p:['are you a real person','are you a bot','are you human','is this a robot','talk to a human','talk to a real person','speak to someone','real advisor'],w:[],
+        a:["I'm MOTR's assistant, so not a human, but I'm here to make getting answers quick. Any time you want a real person, call or text "+CALL+" and someone from the team will help you out."]},
+      {id:'dealerB2B',ack:1,p:['i am a dealership','i\'m a dealership','work with motr','send you inventory','send me leads','dealership partner','become a partner','list my inventory','advertise my inventory'],w:['b2b'],
+        a:["Absolutely, we're building relationships with dealerships and automotive partners. Whether it's inventory, leads or partnering up, email "+MAIL+" with a bit about your dealership and the team will take it from there."]},
+      {id:'motros',ack:1,p:['motr os','dealership software','your software','crm','platform for dealers'],w:[],
+        a:["MOTR OS is the future dealership-tech side of MOTR, the idea being one system for leads, customers, credit apps, documents, follow-ups, financing, inventory and reporting. It's still in development. If you'd like to be contacted about early access, email "+MAIL+"."]}
+    ];
+
+    var WORD=/[a-z0-9']+/g;
+    function score(t){
+      var best=null, bestScore=0;
+      for(var i=0;i<KB.length;i++){
+        var e=KB[i], s=0, j;
+        if(e.p) for(j=0;j<e.p.length;j++){ if(t.indexOf(e.p[j])>-1) s+=3; }
+        if(e.w) for(j=0;j<e.w.length;j++){ if(new RegExp('\\b'+e.w[j].replace(/[.*+?^${}()|[\]\\]/g,'\\$&')+'\\b').test(t)) s+=1; }
+        if(s>bestScore){ bestScore=s; best=e; }
+      }
+      return bestScore>=3?best:null; // require at least one strong phrase or 3 word hits
+    }
+
+    function smalltalk(t){
+      if(/^(hi|hey|hello|yo|sup|good morning|good afternoon|good evening|hiya)\b/.test(t))
+        return "Hey, welcome to MOTR. I can help you figure out financing, find a vehicle, or point you to a real advisor. What are you looking to do?";
+      if(/(thank|thanks|thx|appreciate|cheers)/.test(t))
+        return pick(["Anytime. If you want, the easiest next step is to "+APPLY+".","No problem at all. Shout if you've got any other questions.","You got it. Ready when you are, you can "+APPLY+" or call "+CALL+"."],'thx');
+      if(/(bye|goodbye|see ya|later|that.?s all|nothing else)/.test(t))
+        return "Take care. When you're ready, "+APPLY+" or reach the team at "+CALL+".";
+      if(/^(ok|okay|cool|nice|got it|k|sounds good|great|perfect)\b/.test(t))
+        return pick(["For sure. Anything else you want to know?","Cool. Want me to explain how the approval side works, or should I point you to "+APPLY+"?"],'ok');
+      return null;
+    }
+
+    var FALLBACK=[
+      "I'm not 100% sure on that exact one and I'd rather be straight with you than make something up. Call or text the team at "+CALL+", or email "+MAIL+", and they'll get you the right answer. In the meantime I can explain financing, vehicles or how it all works.",
+      "That one's probably better answered by a person since it depends on the exact situation. You can reach the team at "+CALL+" or "+MAIL+". Or ask me about credit, vehicles, trade-ins or how the process works."
+    ];
+
+    function answer(raw){
+      var t=(' '+raw.toLowerCase()+' ').replace(/[\u2019]/g,"'");
+      var s=safety(t); if(s) return s;
+      var mk=makeAsk(t); if(mk) return mk;
+      var e=score(t);
+      if(e){
+        var msg=pick(e.a,e.id);
+        if(e.ack && Math.random()<0.5 && !/^(yeah|yep|yes|nope|nah|no\b|absolutely|for sure|maybe|possibly|potentially|sometimes|honestly|fair)/i.test(msg)) msg=pick(ACK,'ack')+' '+msg;
+        return msg;
+      }
+      var st=smalltalk(t); if(st) return st;
+      return pick(FALLBACK,'fb');
+    }
+
+    /* ---------- UI plumbing ---------- */
     var QUICK=[
-      {t:'Explore financing',k:'financing'},
-      {t:'Find a vehicle',k:'vehicle'},
-      {t:'Bad credit / newcomer',k:'credit'},
-      {t:'How it works',k:'how'},
-      {t:'Talk to a human',k:'human'}
+      {t:'How it works',q:'how does it work'},
+      {t:'Bad or no credit',q:'can you help with bad credit'},
+      {t:'What vehicles',q:'what kind of vehicles can you help with'},
+      {t:'Do I need money down',q:'do i need a down payment'},
+      {t:'Talk to a human',q:'talk to a real person'}
     ];
     function add(text,who){
       var d=document.createElement('div'); d.className='cc-msg '+(who==='user'?'cc-user':'cc-bot'); d.innerHTML=text; body.appendChild(d); body.scrollTop=body.scrollHeight;
     }
-    function bot(text){ setTimeout(function(){add(text,'bot');},260); }
-    function renderQuick(){ quick.innerHTML=''; QUICK.forEach(function(q){var b=document.createElement('button');b.className='cc-chip';b.textContent=q.t;b.onclick=function(){handle(q.k,q.t);};quick.appendChild(b);}); }
-    var APPLY='<a href="#apply" class="gold" onclick="document.getElementById(\'ccPanel\').style.display=\'none\'">start your application</a>';
-    var CALL='<a href="tel:+16473354468" class="gold">647-335-4468</a>';
-    function reply(key){
-      switch(key){
-        case 'financing': return 'MOTR helps connect you with vehicle financing options through our partner network. There is no cost to apply, and we work with many credit situations. The best next step is to '+APPLY+' and an advisor will review your options. Note: MOTR is not a lender and financing is subject to lender approval.';
-        case 'vehicle': return 'We help with cars, SUVs, trucks, luxury vehicles, powersports and RVs. Tell us what you are after when you '+APPLY+', and an advisor helps source and match the right one.';
-        case 'credit': return 'Credit challenges do not have to stop the conversation. We work with bad credit, no credit, newcomers to Canada, and self-employed buyers. No approval is ever guaranteed, but we help explore what may be possible. You can '+APPLY+' to get started.';
-        case 'how': return 'It is simple: apply, speak with a MOTR advisor, review your options, get matched with a vehicle and partner, then complete the transaction. Ready when you are, you can '+APPLY+'.';
-        case 'cost': return 'There is no cost to apply with MOTR. Vehicle price and any financing terms come from the dealer and lender. Want to '+APPLY+'?';
-        case 'human': return 'Of course. You can reach a MOTR advisor directly at '+CALL+', or leave your details when you '+APPLY+' and we will call you.';
-        default: return 'Happy to help. I can explain financing, help you find a vehicle, or connect you with an advisor. You can also '+APPLY+' anytime, or call '+CALL+'.';
-      }
-    }
-    function detect(text){
-      var t=text.toLowerCase();
-      if(/(finance|financing|loan|approv|rate|payment|lender)/.test(t)) return 'financing';
-      if(/(car|suv|truck|vehicle|luxury|powersport|motorcycle|rv|jet ?ski|atv)/.test(t)) return 'vehicle';
-      if(/(bad credit|no credit|newcomer|new to canada|self.?employ|rebuild|bankrupt|proposal)/.test(t)) return 'credit';
-      if(/(how|process|step|work)/.test(t)) return 'how';
-      if(/(cost|fee|price|charge|free)/.test(t)) return 'cost';
-      if(/(human|agent|call|phone|talk|speak|advisor|contact)/.test(t)) return 'human';
-      return 'default';
-    }
-    function handle(key,label){ add(label||key,'user'); bot(reply(key)); }
-    function open(){ if(!opened){opened=true; add('Hi, I am the MOTR Concierge. I can help you explore financing, find a vehicle, or connect you with a real advisor. What brings you in today?','bot'); renderQuick();}
+    function typing(){ var d=document.createElement('div'); d.className='cc-msg cc-bot cc-typing'; d.innerHTML='<span></span><span></span><span></span>'; d.id='ccTyping'; body.appendChild(d); body.scrollTop=body.scrollHeight; }
+    function untyping(){ var d=document.getElementById('ccTyping'); if(d) d.remove(); }
+    function botReply(text){ typing(); var delay=420+Math.min(900,text.length*7); setTimeout(function(){untyping(); add(text,'bot');},delay); }
+    function renderQuick(){ quick.innerHTML=''; QUICK.forEach(function(q){var b=document.createElement('button');b.className='cc-chip';b.textContent=q.t;b.onclick=function(){ add(q.t,'user'); botReply(answer(q.q)); };quick.appendChild(b);}); }
+    function open(){ if(!opened){opened=true; add("Hey, I'm the MOTR assistant. Ask me anything about financing, credit, vehicles, trade-ins or how it works, or I can connect you with a real advisor. What brings you in?","bot"); renderQuick();}
       panel.style.display='flex'; launch.style.display='none'; setTimeout(function(){ccText.focus();},50); }
     function close(){ panel.style.display='none'; launch.style.display='flex'; }
     launch.addEventListener('click',open); x.addEventListener('click',close);
-    ccForm.addEventListener('submit',function(e){e.preventDefault(); var v=ccText.value.trim(); if(!v) return; add(v,'user'); ccText.value=''; bot(reply(detect(v)));});
+    ccForm.addEventListener('submit',function(e){e.preventDefault(); var v=ccText.value.trim(); if(!v) return; add(v,'user'); ccText.value=''; botReply(answer(v));});
   })();
+
 </script>
 </body>
 </html>
